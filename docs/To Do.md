@@ -16,6 +16,8 @@
 - [ ] Research new Whisper models available on Hugging Face
 - [ ] Plan better model discovery and selection interface
 - [ ] Consider model versioning and updates strategy
+- [ ] Add webassembly service worker to library
+- [ ] Write a proper license for the library
 
 ---
 
