@@ -28,6 +28,7 @@
     "dev:demo": "vite --mode demo --port 7008",
     "preview": "vite preview",
     "test": "vitest",
+    "test:ci": "vitest run",
     "test:watch": "vitest --watch",
     "test:ui": "vitest --ui",
     "lint": "eslint src/**/*.ts",

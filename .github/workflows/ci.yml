@@ -77,19 +77,11 @@ jobs:
       - name: Run linter
         run: npm run lint
 
-      # - name: Run tests
-      #   run: npm test
+      - name: Run tests
+        run: npm run test:ci
 
       - name: Build project
         run: npm run build
-
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v3
-        if: matrix.node-version == '20.x'
-        with:
-          file: ./coverage/lcov.info
-          flags: unittests
-          name: codecov-umbrella
 
   deploy-demo:
     runs-on: ubuntu-latest
