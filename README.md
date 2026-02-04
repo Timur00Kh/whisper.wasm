@@ -1,5 +1,14 @@
 # Whisper.wasm
 
+[![CI](https://github.com/timur00kh/whisper.wasm/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/timur00kh/whisper.wasm/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/%40timur00kh%2Fwhisper.wasm?color=blue)](https://www.npmjs.com/package/@timur00kh/whisper.wasm)
+[![npm downloads](https://img.shields.io/npm/dm/%40timur00kh%2Fwhisper.wasm)](https://www.npmjs.com/package/@timur00kh/whisper.wasm)
+[![license](https://img.shields.io/npm/l/%40timur00kh%2Fwhisper.wasm)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/timur00kh/whisper.wasm?style=social)](https://github.com/timur00kh/whisper.wasm)
+[![issues](https://img.shields.io/github/issues/timur00kh/whisper.wasm)](https://github.com/timur00kh/whisper.wasm/issues)
+[![release date](https://img.shields.io/github/release-date/timur00kh/whisper.wasm)](https://github.com/timur00kh/whisper.wasm/releases)
+[![GitHub Pages](https://img.shields.io/badge/demo-GitHub%20Pages-blue)](https://timur00kh.github.io/whisper.wasm/)
+
 A TypeScript wrapper for [whisper.cpp](https://github.com/ggml-org/whisper.cpp) that brings OpenAI's Whisper speech recognition to the browser using WebAssembly.
 
 > Note: Node.js support is experimental / untested at the moment. (The core WASM layer may work, but browser-specific helpers like the AudioConverter require Web APIs.)
