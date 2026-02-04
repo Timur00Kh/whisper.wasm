@@ -24,14 +24,12 @@
  * const transcription = await whisperService.transcribe(audioData.audioData);
  */
 
-import { Logger } from '../utils/Logger';
+import { Logger, type LoggerLevelsType } from '../utils/Logger';
 import {
   AudioFormat,
-  type AudioInfo,
   type AudioConverterOptions,
   type AudioConversionResult,
   type AudioConverterCallbacks,
-  type AudioSource,
 } from './types';
 
 /**
@@ -40,10 +38,36 @@ import {
 const DEFAULT_OPTIONS: Required<AudioConverterOptions> = {
   targetSampleRate: 16000, // Whisper требует 16kHz
   targetChannels: 1, // Моно аудио
+  inputSampleRate: 16000,
   normalize: true,
   noiseReduction: false,
-  logLevel: 'ERROR',
+  logLevel: Logger.levels.ERROR,
+  signal: undefined as any,
+  recordingDurationMs: 10_000,
 };
+
+function resolveLogLevel(
+  logLevel: AudioConverterOptions['logLevel'] | undefined,
+): LoggerLevelsType {
+  if (typeof logLevel === 'number') {
+    return logLevel;
+  }
+  if (!logLevel) {
+    return Logger.levels.ERROR;
+  }
+  // string value: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
+  return Logger.levels[logLevel];
+}
+
+function createLogger(options: Required<AudioConverterOptions>) {
+  return new Logger(resolveLogLevel(options.logLevel), 'AudioConverter');
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+}
 
 /**
  * Проверка поддержки Web Audio API
@@ -72,7 +96,6 @@ export function getSupportedFormats(): AudioFormat[] {
     AudioFormat.M4A,
     AudioFormat.AAC,
     AudioFormat.FLAC,
-    AudioFormat.WEBM_AUDIO,
     AudioFormat.MP4,
     AudioFormat.WEBM,
     AudioFormat.AVI,
@@ -97,10 +120,11 @@ export async function convertFromFile(
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  const logger = new Logger(opts.logLevel as any, 'AudioConverter');
+  const logger = createLogger(opts);
   const warnings: string[] = [];
 
   try {
+    throwIfAborted(opts.signal);
     logger.info(`Converting file: ${file.name}`);
     callbacks.onProgress?.(0, `Loading file: ${file.name}`);
 
@@ -109,6 +133,7 @@ export async function convertFromFile(
     callbacks.onProgress?.(20, 'File loaded, decoding...');
 
     // Декодируем аудио
+    throwIfAborted(opts.signal);
     const audioBuffer = await decodeAudioData(arrayBuffer, opts, callbacks, logger);
     callbacks.onProgress?.(40, 'Audio decoded, processing...');
 
@@ -139,34 +164,27 @@ export async function convertFromMediaStream(
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  const logger = new Logger(opts.logLevel as any, 'AudioConverter');
+  const logger = createLogger(opts);
+  const warnings: string[] = [];
 
   try {
+    throwIfAborted(opts.signal);
     logger.info('Converting from MediaStream');
     callbacks.onProgress?.(0, 'Starting recording...');
 
-    // Создаем AudioContext
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    const context = new AudioContextClass({
-      sampleRate: opts.targetSampleRate,
-    });
+    const blob = await recordMediaStreamToBlob(stream, opts, callbacks, logger);
+    callbacks.onProgress?.(50, 'Recording completed, decoding...');
 
-    // Создаем источник из потока
-    const source = context.createMediaStreamSource(stream);
+    const arrayBuffer = await blob.arrayBuffer();
 
-    // Создаем анализатор для записи
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 2048;
+    // Декодируем и приводим к нужному формату
+    const audioBuffer = await decodeAudioData(arrayBuffer, opts, callbacks, logger);
+    callbacks.onProgress?.(70, 'Audio decoded, processing...');
 
-    source.connect(analyser);
+    const result = await processAudioBuffer(audioBuffer, opts, callbacks, logger, warnings);
+    callbacks.onProgress?.(100, 'Conversion completed');
 
-    // Простая реализация записи - в реальности нужна более сложная логика
-    callbacks.onProgress?.(50, 'Recording audio...');
-
-    // Пока возвращаем ошибку, так как полная реализация требует сложной логики
-    throw new Error(
-      'MediaStream conversion not yet implemented - requires complex recording logic',
-    );
+    return result;
   } catch (error) {
     logger.error('MediaStream conversion failed:', error);
     callbacks.onError?.(error as Error);
@@ -187,28 +205,67 @@ export async function convertFromAudioElement(
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  const logger = new Logger(opts.logLevel as any, 'AudioConverter');
+  const logger = createLogger(opts);
+  const warnings: string[] = [];
 
   try {
+    throwIfAborted(opts.signal);
     logger.info('Converting from HTMLAudioElement');
     callbacks.onProgress?.(0, 'Capturing audio from element...');
 
-    // Создаем AudioContext
-    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    const context = new AudioContextClass({
-      sampleRate: opts.targetSampleRate,
-    });
+    // 1) Best: element has a MediaStream (live source)
+    const srcObject = (element as any).srcObject as unknown;
+    if (srcObject && srcObject instanceof MediaStream) {
+      warnings.push('Using HTMLAudioElement.srcObject MediaStream');
+      const result = await convertFromMediaStream(srcObject, opts, callbacks);
+      return {
+        ...result,
+        warnings: [...warnings, ...(result.warnings ?? [])],
+      };
+    }
 
-    // Создаем источник из элемента
-    const source = context.createMediaElementSource(element);
+    // 2) Try fetch currentSrc/src (best quality, no re-encode). Requires CORS.
+    const srcUrl = element.currentSrc || element.src;
+    if (srcUrl) {
+      try {
+        callbacks.onProgress?.(10, 'Fetching audio source...');
+        const arrayBuffer = await fetchArrayBuffer(srcUrl, opts.signal);
+        callbacks.onProgress?.(30, 'Fetched, decoding...');
+        const audioBuffer = await decodeAudioData(arrayBuffer, opts, callbacks, logger);
+        callbacks.onProgress?.(60, 'Decoded, processing...');
+        const result = await processAudioBuffer(audioBuffer, opts, callbacks, logger, warnings);
+        callbacks.onProgress?.(100, 'Conversion completed');
+        return result;
+      } catch (e) {
+        if ((e as any)?.name === 'AbortError') {
+          throw e;
+        }
+        warnings.push(
+          `Failed to fetch element src (CORS?) – falling back to captureStream: ${(e as Error).message}`,
+        );
+      }
+    }
 
-    // Подключаем к контексту
-    source.connect(context.destination);
+    // 3) Fallback: captureStream + MediaRecorder
+    const captureFn = (element as any).captureStream || (element as any).mozCaptureStream;
+    if (typeof captureFn !== 'function') {
+      throw new Error(
+        'Unable to capture audio from HTMLAudioElement: no srcObject, fetch failed, and captureStream() is not supported',
+      );
+    }
 
-    // Пока возвращаем ошибку, так как полная реализация требует сложной логики
-    throw new Error(
-      'HTMLAudioElement conversion not yet implemented - requires complex capture logic',
-    );
+    warnings.push('Using HTMLAudioElement.captureStream() fallback');
+    const capturedStream: MediaStream = captureFn.call(element);
+    try {
+      const result = await convertFromMediaStream(capturedStream, opts, callbacks);
+      return {
+        ...result,
+        warnings: [...warnings, ...(result.warnings ?? [])],
+      };
+    } finally {
+      // Stop only streams we created via captureStream().
+      capturedStream.getTracks().forEach((t) => t.stop());
+    }
   } catch (error) {
     logger.error('HTMLAudioElement conversion failed:', error);
     callbacks.onError?.(error as Error);
@@ -229,33 +286,46 @@ export async function convertFromFloat32Array(
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  const logger = new Logger(opts.logLevel as any, 'AudioConverter');
+  const logger = createLogger(opts);
 
   try {
+    throwIfAborted(opts.signal);
     logger.info('Converting from Float32Array');
     callbacks.onProgress?.(0, 'Processing Float32Array...');
 
     // Создаем AudioContext
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-    const context = new AudioContextClass({
-      sampleRate: opts.targetSampleRate,
-    });
+    const inputSampleRate = opts.inputSampleRate ?? opts.targetSampleRate;
+    const context = new AudioContextClass({ sampleRate: inputSampleRate });
 
-    // Создаем AudioBuffer из Float32Array
-    const audioBuffer = context.createBuffer(1, data.length, context.sampleRate);
-    const channelData = audioBuffer.getChannelData(0);
-    channelData.set(data);
+    try {
+      // Создаем AudioBuffer из Float32Array
+      const audioBuffer = context.createBuffer(1, data.length, context.sampleRate);
+      const channelData = audioBuffer.getChannelData(0);
+      channelData.set(data);
 
-    callbacks.onProgress?.(30, 'AudioBuffer created, processing...');
+      callbacks.onProgress?.(30, 'AudioBuffer created, processing...');
 
-    // Обрабатываем
-    const warnings: string[] = [];
-    const result = await processAudioBuffer(audioBuffer, opts, callbacks, logger, warnings);
+      // Обрабатываем
+      const warnings: string[] = [];
+      if (inputSampleRate !== opts.targetSampleRate) {
+        warnings.push(
+          `Float32Array sample rate (${inputSampleRate}Hz) will be converted to ${opts.targetSampleRate}Hz`,
+        );
+      }
+      const result = await processAudioBuffer(audioBuffer, opts, callbacks, logger, warnings);
 
-    callbacks.onProgress?.(100, 'Conversion completed');
-    logger.info('Float32Array conversion completed successfully');
+      callbacks.onProgress?.(100, 'Conversion completed');
+      logger.info('Float32Array conversion completed successfully');
 
-    return result;
+      return result;
+    } finally {
+      try {
+        await context.close();
+      } catch {
+        // ignore
+      }
+    }
   } catch (error) {
     logger.error('Float32Array conversion failed:', error);
     callbacks.onError?.(error as Error);
@@ -276,10 +346,11 @@ export async function convertFromArrayBuffer(
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  const logger = new Logger(opts.logLevel as any, 'AudioConverter');
+  const logger = createLogger(opts);
   const warnings: string[] = [];
 
   try {
+    throwIfAborted(opts.signal);
     logger.info('Converting from ArrayBuffer');
     callbacks.onProgress?.(0, 'Processing ArrayBuffer...');
 
@@ -336,6 +407,12 @@ async function decodeAudioData(
   } catch (error) {
     logger.error('Audio decoding failed:', error);
     throw new Error(`Failed to decode audio: ${(error as Error).message}`);
+  } finally {
+    try {
+      await context.close();
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -489,8 +566,6 @@ function validateAudioBuffer(
   options: Required<AudioConverterOptions>,
   warnings: string[],
 ): void {
-  const duration = buffer.duration;
-
   if (buffer.numberOfChannels > 2) {
     warnings.push(`Audio has ${buffer.numberOfChannels} channels, will be mixed to mono`);
   }
@@ -500,4 +575,90 @@ function validateAudioBuffer(
       `Audio sample rate (${buffer.sampleRate}Hz) will be converted to ${options.targetSampleRate}Hz`,
     );
   }
+}
+
+async function recordMediaStreamToBlob(
+  stream: MediaStream,
+  options: Required<AudioConverterOptions>,
+  callbacks: AudioConverterCallbacks,
+  logger: Logger,
+): Promise<Blob> {
+  if (typeof window === 'undefined') {
+    throw new Error('MediaStream recording is only supported in browser environments');
+  }
+  if (!(window as any).MediaRecorder) {
+    throw new Error('MediaRecorder is not supported in this browser');
+  }
+
+  const MediaRecorderClass = (window as any).MediaRecorder as typeof MediaRecorder;
+
+  const candidateMimeTypes = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/ogg',
+  ];
+  const mimeType = candidateMimeTypes.find((t) => MediaRecorderClass.isTypeSupported(t));
+
+  const recorder = new MediaRecorderClass(stream, mimeType ? { mimeType } : undefined);
+  const chunks: BlobPart[] = [];
+
+  const stopPromise = new Promise<Blob>((resolve, reject) => {
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) {
+        chunks.push(e.data);
+      }
+    };
+    recorder.onerror = () => reject(new Error('MediaRecorder error'));
+    recorder.onstop = () => {
+      const type = mimeType || recorder.mimeType || 'application/octet-stream';
+      resolve(new Blob(chunks, { type }));
+    };
+  });
+
+  const signal = options.signal;
+  const onAbort = () => {
+    try {
+      if (recorder.state !== 'inactive') {
+        recorder.stop();
+      }
+    } catch {
+      // ignore
+    }
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  const durationMs = options.recordingDurationMs ?? 10_000;
+  const timeout = setTimeout(() => {
+    try {
+      if (recorder.state !== 'inactive') {
+        recorder.stop();
+      }
+    } catch {
+      // ignore
+    }
+  }, durationMs);
+
+  callbacks.onProgress?.(20, 'Recording audio...');
+  logger.debug('Starting MediaRecorder', { mimeType: mimeType ?? recorder.mimeType, durationMs });
+
+  // Use timeslice to get progressive dataavailable events.
+  recorder.start(250);
+
+  try {
+    const blob = await stopPromise;
+    return blob;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+async function fetchArrayBuffer(url: string, signal?: AbortSignal): Promise<ArrayBuffer> {
+  throwIfAborted(signal);
+  const res = await fetch(url, { signal });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch (${res.status}): ${res.statusText}`);
+  }
+  return await res.arrayBuffer();
 }

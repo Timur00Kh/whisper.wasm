@@ -2,6 +2,8 @@
  * Audio converter types and interfaces for whisper.wasm
  */
 
+import type { LoggerLevelsType } from '../utils/Logger';
+
 export interface AudioInfo {
   /** Sample rate in Hz */
   sampleRate: number;
@@ -20,12 +22,33 @@ export interface AudioConverterOptions {
   targetSampleRate?: number;
   /** Target number of channels (default: 1 for mono) */
   targetChannels?: number;
+  /**
+   * Sample rate for Float32Array inputs.
+   * If omitted, Float32Array is assumed to already be at targetSampleRate.
+   */
+  inputSampleRate?: number;
   /** Whether to normalize audio levels */
   normalize?: boolean;
   /** Whether to apply noise reduction (basic) */
   noiseReduction?: boolean;
-  /** Log level for debugging */
-  logLevel?: 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
+  /**
+   * Log level for debugging.
+   * Prefer numeric LoggerLevelsType for consistency with the library.
+   * String values are also accepted for convenience.
+   */
+  logLevel?: LoggerLevelsType | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG';
+
+  /**
+   * Optional AbortSignal to cancel long operations (recording, fetch, etc).
+   * Implementations should treat abort as a cancellation and reject.
+   */
+  signal?: AbortSignal;
+
+  /**
+   * For MediaStream / captureStream based conversions: how long to record
+   * before auto-stopping. If omitted, defaults are applied.
+   */
+  recordingDurationMs?: number;
 }
 
 export interface AudioConversionResult {
@@ -56,7 +79,6 @@ export enum AudioFormat {
   M4A = 'm4a',
   AAC = 'aac',
   FLAC = 'flac',
-  WEBM_AUDIO = 'webm',
 
   // Video files (audio track extraction)
   MP4 = 'mp4',
