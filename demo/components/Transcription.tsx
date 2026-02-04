@@ -28,6 +28,7 @@ export const Transcription: React.FC<TranscriptionProps> = ({
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
+  const micStopControllerRef = useRef<AbortController | null>(null);
   const micConversionPromiseRef = useRef<Promise<AudioConversionResult> | null>(null);
   const micCancelledRef = useRef(false);
 
@@ -51,15 +52,24 @@ export const Transcription: React.FC<TranscriptionProps> = ({
   };
 
   const cancelTranscription = () => {
-    if (abortController) {
-      micCancelledRef.current = true;
-      abortController.abort();
-      setCanCancel(false);
-      setLoading(false);
-      setRecording(false);
-      setAbortController(null);
-      setStatus('Cancelled');
-    }
+    micCancelledRef.current = true;
+
+    // Cancel any ongoing transcription (file/element/mic transcription)
+    abortController?.abort();
+
+    // Stop mic recording/conversion early (but this is not the same as cancelling transcription)
+    micStopControllerRef.current?.abort();
+
+    // Cleanup mic stream if any
+    const stream = micStreamRef.current;
+    micStreamRef.current = null;
+    stream?.getTracks().forEach((t) => t.stop());
+
+    setCanCancel(false);
+    setLoading(false);
+    setRecording(false);
+    setAbortController(null);
+    setStatus('Cancelled');
   };
 
   const transcribeFloat32 = async (audioData: Float32Array, controller: AbortController) => {
@@ -181,8 +191,9 @@ export const Transcription: React.FC<TranscriptionProps> = ({
       return;
     }
 
-    const controller = new AbortController();
-    setAbortController(controller);
+    // This controller is for "Cancel" semantics (UI + transcription cancellation later).
+    const cancelController = new AbortController();
+    setAbortController(cancelController);
     setCanCancel(true);
     setRecording(true);
     setTranscription('');
@@ -194,14 +205,18 @@ export const Transcription: React.FC<TranscriptionProps> = ({
       micStreamRef.current = stream;
 
       setStatus('Recording... (press Stop to transcribe)');
+      // This controller is for "Stop recording now" semantics.
+      const stopController = new AbortController();
+      micStopControllerRef.current = stopController;
+
       micConversionPromiseRef.current = convertFromMediaStream(
         stream,
         {
-          signal: controller.signal,
+          signal: stopController.signal,
           recordingDurationMs: 60_000,
           logLevel: 'ERROR',
         },
-        createConverterCallbacks(controller),
+        createConverterCallbacks(cancelController),
       );
     } catch (e) {
       setRecording(false);
@@ -212,10 +227,12 @@ export const Transcription: React.FC<TranscriptionProps> = ({
   };
 
   const stopMicAndTranscribe = async () => {
-    if (!recording || !abortController || !micConversionPromiseRef.current) return;
+    if (!recording || !micConversionPromiseRef.current) return;
+    if (!micStopControllerRef.current) return;
 
-    // abort stops recording early (gracefully) in the converter
-    abortController.abort();
+    // Stop recording early (gracefully) in the converter.
+    // IMPORTANT: This is NOT a cancellation of transcription.
+    micStopControllerRef.current.abort();
     setStatus('Stopping recording...');
 
     try {
@@ -225,10 +242,17 @@ export const Transcription: React.FC<TranscriptionProps> = ({
         return;
       }
 
+      setRecording(false);
       setLoading(true);
       setStatus('Transcribing microphone audio...');
-      await transcribeFloat32(conversion.audioData, abortController);
-      setStatus('Transcription completed');
+
+      // New controller for transcription cancellation (Cancel button).
+      const transcribeController = new AbortController();
+      setAbortController(transcribeController);
+      setCanCancel(true);
+
+      await transcribeFloat32(conversion.audioData, transcribeController);
+      if (!transcribeController.signal.aborted) setStatus('Transcription completed');
     } catch (e) {
       if (micCancelledRef.current) {
         setStatus('Cancelled');
@@ -241,6 +265,7 @@ export const Transcription: React.FC<TranscriptionProps> = ({
       setCanCancel(false);
       setAbortController(null);
       micConversionPromiseRef.current = null;
+      micStopControllerRef.current = null;
 
       const stream = micStreamRef.current;
       micStreamRef.current = null;
