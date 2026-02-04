@@ -1,6 +1,8 @@
 # Whisper.wasm
 
-A TypeScript wrapper for [whisper.cpp](https://github.com/ggml-org/whisper.cpp) that brings OpenAI's Whisper speech recognition to the browser and Node.js using WebAssembly.
+A TypeScript wrapper for [whisper.cpp](https://github.com/ggml-org/whisper.cpp) that brings OpenAI's Whisper speech recognition to the browser using WebAssembly.
+
+> Note: Node.js support is experimental / untested at the moment. (The core WASM layer may work, but browser-specific helpers like the AudioConverter require Web APIs.)
 
 ## Features
 
@@ -8,10 +10,10 @@ A TypeScript wrapper for [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 
 - ⚡ **WebAssembly performance** - runs directly in the browser
 - 🌍 **Multi-language support** with automatic language detection
 - 🔄 **Translation capabilities** - translate speech to English
-- 📱 **Cross-platform** - works in browsers and Node.js
+- 📱 **Cross-platform** - browser-first; Node.js is experimental / untested
 - 🧠 **Multiple model sizes** - from tiny to large models
 - 🎯 **Streaming transcription** - real-time audio processing
-- 📦 **Zero dependencies** - no external libraries required
+- 🎵 **Audio conversion helpers (browser-only)** - convert files / mic / `<audio>` to 16kHz `Float32Array` for Whisper
 
 ## Installation
 
@@ -24,7 +26,7 @@ npm install @timur00kh/whisper.wasm@canary
 ### Basic Usage
 
 ```typescript
-import { WhisperWasmService, ModelManager } from '@timur00kh/whisper.wasm';
+import { WhisperWasmService, ModelManager, convertFromFile } from '@timur00kh/whisper.wasm';
 
 // Initialize the service
 const whisper = new WhisperWasmService({ logLevel: 1 });
@@ -42,6 +44,10 @@ await whisper.initModel(modelData);
 
 // Create a transcription session for streaming
 const session = whisper.createSession();
+
+// Convert an audio/video file to 16kHz Float32Array (browser-only helper)
+// (e.g. a File from <input type="file" />)
+const { audioData } = await convertFromFile(file, { normalize: true });
 
 // Process audio in chunks
 const stream = session.streamimg(audioData, {
@@ -202,7 +208,18 @@ A: Yes! Use the `TranscriptionSession` with streaming audio data. For real-time 
 
 ### Q: What audio formats are supported?
 
-A: The library works with `Float32Array` audio data at 16kHz sample rate. You'll need to convert your audio files to this format before processing.
+A: Whisper expects `Float32Array` audio data at 16kHz. You can either prepare it yourself, or use the built-in **AudioConverter** helpers (browser-only):
+
+- `convertFromFile(file)` - audio/video files supported by the browser decoder
+- `convertFromArrayBuffer(buffer)` - decode & convert from an ArrayBuffer
+- `convertFromFloat32Array(data, { inputSampleRate? })` - resample if needed
+- `convertFromMediaStream(stream)` - microphone / capture stream (requires `MediaRecorder`)
+- `convertFromAudioElement(audioEl)` - tries `fetch(audioEl.src)` (CORS), otherwise `captureStream()` fallback (browser support varies)
+
+Notes:
+
+- AudioConverter uses Web APIs (`Web Audio`, `MediaRecorder`), so it does **not** run in Node.js.
+- `<audio>` conversion may require proper CORS headers to allow `fetch()` of the audio URL.
 
 ### Q: How do I handle errors gracefully?
 
@@ -225,6 +242,8 @@ npm run dev:demo
 The demo includes:
 
 - Audio file upload and processing
+- Transcription from `<audio>` element
+- Microphone recording (Start/Stop) and transcription
 - Model selection and loading
 - Real-time transcription with progress
 - Language detection and translation
@@ -237,6 +256,7 @@ For detailed information about changes, new features, and bug fixes, see our [ch
 ### Recent Updates
 
 - **[feature-restart-on-timeout](docs/changelog/feature-restart-on-timeout.md)** - Added timeout handling, error recovery, and enhanced demo application
+- **[feature-audio-converter](docs/changelog/feature-audio-converter.md)** - Added AudioConverter helpers + demo integration (files, mic, `<audio>`)
 
 ## Development
 
