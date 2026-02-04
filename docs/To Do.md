@@ -21,6 +21,7 @@
 - [ ] Plan better model discovery and selection interface
 - [ ] Consider model versioning and updates strategy
 - [ ] Add webassembly service worker to library
+- [ ] CI/CD: switch NPM publishing to npm Trusted Publishing (OIDC) instead of long-lived `NPM_TOKEN` (per npm security warning)
 - [ ] Finalize `LICENSE` text (copyright holder/years)
 
 ---
