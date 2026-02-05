@@ -20,9 +20,11 @@ declare global {
   }
 }
 
-type TranscribeEvent = CustomEvent<string>;
+interface TranscribeEvent extends Event {
+  detail: string;
+}
 
-type TranscribeEventType = 'system_info' | 'transcribe' | 'transcribeDone' | 'transcribeError';
+type TranscribeEventType = 'system_info' | 'transcribe' | 'transcribeError';
 
 class TranscriptionEventBus extends EventTarget {
   on(type: TranscribeEventType, handler: (event: TranscribeEvent) => void) {
@@ -30,7 +32,7 @@ class TranscriptionEventBus extends EventTarget {
     return () => this.removeEventListener(type, handler as EventListener);
   }
   emit(type: TranscribeEventType, detail: string) {
-    this.dispatchEvent(new CustomEvent<string>(type, { detail }) as TranscribeEvent);
+    this.dispatchEvent(new CustomEvent(type, { detail }) as TranscribeEvent);
   }
 }
 
@@ -79,13 +81,6 @@ export class WhisperWasmService {
         if (rest.length > 0) {
           this.logger.debug(rest);
         }
-        if (e === ' ') {
-          // whisper.cpp uses a single space on stderr as a completion signal
-          this.logger.debug('Transcribe done');
-          this.bus.emit('transcribeDone', e);
-          return;
-        }
-
         this.logger.warn(e);
         this.bus.emit('transcribeError', e);
       },
@@ -151,9 +146,6 @@ export class WhisperWasmService {
       throw new Error('WASM instance not loaded');
     }
 
-    const wasmModule = this.wasmModule;
-    const instance = this.instance;
-
     const maxDuration = 120;
     if (audioData.length > 16000 * maxDuration) {
       // may be need to throw error
@@ -175,31 +167,9 @@ export class WhisperWasmService {
     const segments: WhisperWasmServiceCallbackParams[] = [];
 
     const startTimestamp = Date.now();
+    this.wasmModule.full_default(this.instance, audioData, language, threads, translate);
+
     return await new Promise((resolve, reject) => {
-      let settled = false;
-
-      const resolveOnce = () => {
-        if (settled) return;
-        settled = true;
-        this.isTranscribing = false;
-        unsubscribe();
-        unsubscribeDone();
-        unsubscribeError();
-        clearTimeout(timeout);
-        resolve({ segments, transcribeDurationMs: Date.now() - startTimestamp });
-      };
-
-      const rejectOnce = (err: unknown) => {
-        if (settled) return;
-        settled = true;
-        this.isTranscribing = false;
-        unsubscribe();
-        unsubscribeDone();
-        unsubscribeError();
-        clearTimeout(timeout);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      };
-
       const unsubscribe = this.bus.on('transcribe', (e) => {
         const { startMs, endMs, text } = parseCueLine(e.detail);
 
@@ -215,26 +185,24 @@ export class WhisperWasmService {
 
       const timeout = setTimeout(
         () => {
+          this.isTranscribing = false;
+          unsubscribe();
+          unsubscribeError();
           this.logger.error('Transcribe timeout');
+          reject(new Error('Transcribe timeout'));
           this.bus.emit('transcribeError', 'Transcribe timeout');
         },
         maxDuration * 2 * 1000,
       );
 
-      const unsubscribeDone = this.bus.on('transcribeDone', () => {
-        resolveOnce();
-      });
-
       const unsubscribeError = this.bus.on('transcribeError', (e) => {
-        this.logger.error('Transcribe error', e.detail);
-        rejectOnce(new Error(e.detail));
+        this.isTranscribing = false;
+        unsubscribe();
+        unsubscribeError();
+        clearTimeout(timeout);
+        this.logger.debug('Transcribe error', e.detail);
+        resolve({ segments, transcribeDurationMs: Date.now() - startTimestamp });
       });
-
-      try {
-        wasmModule.full_default(instance, audioData, language, threads, translate);
-      } catch (err) {
-        rejectOnce(err);
-      }
     });
   }
 

@@ -20,6 +20,7 @@
 - [ ] Research new Whisper models available on Hugging Face
 - [ ] Plan better model discovery and selection interface
 - [ ] Consider model versioning and updates strategy
+- [ ] (Optional) Revisit `transcribeDone` / completion signaling: we removed/rolled back the "done" event logic (e.g. handling `printErr(' ')` as completion); decide whether to restore it and align error/done semantics. Ref: [73ba0f0](https://github.com/Timur00Kh/whisper.wasm/commit/73ba0f05194a67919c02eaed11b29659bf63d40e#diff-bcb2f70e95733795db81fd98301edf67d219cfa3d15b6d569493807b513fad44)
 - [ ] Add webassembly service worker to library
 - [ ] CI/CD: switch NPM publishing to npm Trusted Publishing (OIDC) instead of long-lived `NPM_TOKEN` (per npm security warning)
 - [ ] CI/CD: replace deprecated `actions/create-release@v1` (use `gh release create` or a maintained release action)
