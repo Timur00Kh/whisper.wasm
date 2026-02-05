@@ -6,6 +6,7 @@ This directory contains detailed changelog files for the whisper.wasm library. E
 
 ### Recent Changes
 
+- [feature-streaming-api-and-transcribe-done](./feature-streaming-api-and-transcribe-done.md) - `streaming()` API + clarified completion semantics
 - [feature-restart-on-timeout](./feature-restart-on-timeout.md) - Timeout handling, error recovery, and enhanced demo application
 - [feature-audio-converter](./feature-audio-converter.md) - Audio conversion helpers + demo integration (files, mic, `<audio>`)
 

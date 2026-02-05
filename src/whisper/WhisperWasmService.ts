@@ -31,7 +31,7 @@ class TranscriptionEventBus extends EventTarget {
     this.addEventListener(type, handler as EventListener);
     return () => this.removeEventListener(type, handler as EventListener);
   }
-  emit(type: TranscribeEventType, detail: any) {
+  emit(type: TranscribeEventType, detail: string) {
     this.dispatchEvent(new CustomEvent(type, { detail }) as TranscribeEvent);
   }
 }
@@ -65,8 +65,10 @@ export class WhisperWasmService {
     this.wasmModule = await (
       await import('@wasm/libmain.js')
     ).default({
-      print: (e: string, ...rest: any[]) => {
-        this.logger.debug(rest);
+      print: (e: string, ...rest: unknown[]) => {
+        if (rest.length > 0) {
+          this.logger.debug(rest);
+        }
         if (e.startsWith('[')) {
           this.logger.info(e);
           this.bus.emit('transcribe', e);
@@ -75,8 +77,10 @@ export class WhisperWasmService {
           this.bus.emit('system_info', e);
         }
       },
-      printErr: (e: string, ...rest: any[]) => {
-        this.logger.debug(rest);
+      printErr: (e: string, ...rest: unknown[]) => {
+        if (rest.length > 0) {
+          this.logger.debug(rest);
+        }
         this.logger.warn(e);
         this.bus.emit('transcribeError', e);
       },

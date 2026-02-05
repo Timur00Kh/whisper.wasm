@@ -39,7 +39,7 @@ import { WhisperWasmService, ModelManager, convertFromFile } from '@timur00kh/wh
 
 // Initialize the service
 const whisper = new WhisperWasmService({ logLevel: 1 });
-const modelManager = new ModelManager();
+const modelManager = new ModelManager({ logLevel: 1 });
 
 // Check WASM support
 const isSupported = await whisper.checkWasmSupport();
@@ -48,7 +48,7 @@ if (!isSupported) {
 }
 
 // Load a model
-const modelData = await modelManager.loadModel('base'); // or 'tiny', 'small', 'medium', 'large'
+const modelData = await modelManager.loadModel('base'); // e.g. 'tiny', 'small', 'medium-q5_0', 'large-q5_0'
 await whisper.initModel(modelData);
 
 // Create a transcription session for streaming
@@ -59,7 +59,7 @@ const session = whisper.createSession();
 const { audioData } = await convertFromFile(file, { normalize: true });
 
 // Process audio in chunks
-const stream = session.streamimg(audioData, {
+const stream = session.streaming(audioData, {
   language: 'en',
   threads: 4,
   translate: false,
@@ -76,7 +76,7 @@ for await (const segment of stream) {
 ```typescript
 import { ModelManager, getAllModels } from '@timur00kh/whisper.wasm';
 
-const modelManager = new ModelManager();
+const modelManager = new ModelManager({ logLevel: 1 });
 
 // Get available models
 const availableModels = await modelManager.getAvailableModels();
@@ -150,21 +150,47 @@ Creates a new transcription session for streaming audio.
 
 Manages Whisper model loading and caching.
 
+#### Constructor
+
+```typescript
+new ModelManager(options?: {
+  logLevel: LoggerLevelsType;
+})
+```
+
 #### Methods
 
-##### `getAvailableModels(): Promise<ModelInfo[]>`
+##### `getAvailableModels(): Promise<WhisperModel[]>`
 
 Returns information about available models.
 
-##### `loadModel(modelId: string, useCache?: boolean, onProgress?: (progress: number) => void): Promise<Uint8Array>`
+##### `loadModel(modelId: ModelID, saveToIndexedDB?: boolean, onProgress?: (progress: number) => void): Promise<Uint8Array>`
 
 Loads a model by ID.
 
 **Parameters:**
 
-- `modelId`: Model identifier ('tiny', 'base', 'small', 'medium', 'large')
-- `useCache`: Whether to use cached model if available
+- `modelId`: Model identifier (see “Supported Models” / `getAllModels()`)
+- `saveToIndexedDB`: Whether to use/save cached model in IndexedDB (browser-only)
 - `onProgress`: Progress callback function
+
+##### `loadModelByUrl(modelUrl: string, onProgress?: (progress: number) => void): Promise<Uint8Array>`
+
+Loads a model from a URL and optionally caches it by URL in IndexedDB.
+
+Security note: do **not** pass untrusted URLs here (see “Security & Privacy”).
+
+##### `getAvailableModelsSync(): WhisperModel[]`
+
+Returns the available model list without checking the cache (sync).
+
+##### `getModelConfig(modelId: ModelID): WhisperModel | undefined`
+
+Returns model configuration by ID (from the built-in config).
+
+##### `getCacheInfo(): Promise<{ count: number; totalSize: number }>`
+
+Returns basic IndexedDB cache statistics.
 
 ##### `clearCache(): Promise<void>`
 
@@ -176,19 +202,31 @@ Handles streaming audio transcription.
 
 #### Methods
 
-##### `streamimg(audioData: Float32Array, options?: ITranscriptionSessionOptions): AsyncIterableIterator<WhisperWasmServiceCallbackParams>`
+##### `streaming(audioData: Float32Array, options?: ITranscriptionSessionOptions): AsyncIterableIterator<WhisperWasmServiceCallbackParams>`
 
 Processes audio data in streaming fashion.
 
+##### `streamimg(audioData: Float32Array, options?: ITranscriptionSessionOptions): AsyncIterableIterator<WhisperWasmServiceCallbackParams>`
+
+Deprecated alias for `streaming(...)`.
+
+Notes:
+
+- `streamimg(...)` is a deprecated alias; prefer `streaming(...)`.
+
 ## Supported Models
 
-| Model  | Size     | Memory | Speed | Quality |
-| ------ | -------- | ------ | ----- | ------- |
-| tiny   | ~39 MB   | ~1 GB  | ~32x  | ~99%    |
-| base   | ~74 MB   | ~1 GB  | ~16x  | ~99%    |
-| small  | ~244 MB  | ~2 GB  | ~6x   | ~99%    |
-| medium | ~769 MB  | ~5 GB  | ~2x   | ~99%    |
-| large  | ~1550 MB | ~10 GB | ~1x   | ~99%    |
+The full model list is defined in the library config and is available via `getAllModels()` / `ModelManager.getAvailableModels()`.
+
+Below are a few common examples (sizes are taken from the current config):
+
+| Model ID      | Size (MB) | Notes                   |
+| ------------- | --------- | ----------------------- |
+| `tiny`        | 75        | Multilingual            |
+| `base`        | 142       | Multilingual            |
+| `small`       | 466       | Multilingual            |
+| `medium-q5_0` | 515       | Multilingual, quantized |
+| `large-q5_0`  | 1030      | Multilingual, quantized |
 
 ## Browser Support
 
@@ -196,6 +234,21 @@ Processes audio data in streaming fashion.
 - **Firefox**: 52+
 - **Safari**: 11+
 - **Edge**: 16+
+
+## Security & Privacy
+
+### Untrusted URLs (SSRF / DoS)
+
+This library performs network requests in a few places:
+
+- `ModelManager.loadModel(...)` / `loadModelByUrl(...)` uses `fetch()` to download model binaries.
+- `convertFromAudioElement(audioEl)` may try `fetch(audioEl.src)` (subject to CORS).
+
+If you are using this library in **Node.js / server-side** environments, do **not** pass untrusted URLs into these APIs. Apply your own controls at the application layer (domain allowlist, proxying, signed URLs, request timeouts, response size limits).
+
+### IndexedDB caching
+
+Model caching uses IndexedDB (browser-only). Models can be large; be mindful of per-origin storage quotas and provide a way for users to clear the cache (`ModelManager.clearCache()`).
 
 ## FAQ
 
@@ -264,6 +317,7 @@ For detailed information about changes, new features, and bug fixes, see our [ch
 
 ### Recent Updates
 
+- **[feature-streaming-api-and-transcribe-done](docs/changelog/feature-streaming-api-and-transcribe-done.md)** - Added `streaming()` API + clarified completion semantics
 - **[feature-restart-on-timeout](docs/changelog/feature-restart-on-timeout.md)** - Added timeout handling, error recovery, and enhanced demo application
 - **[feature-audio-converter](docs/changelog/feature-audio-converter.md)** - Added AudioConverter helpers + demo integration (files, mic, `<audio>`)
 
