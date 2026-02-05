@@ -5,8 +5,6 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
-  release:
-    types: [published]
 
 jobs:
   build-wasm:
@@ -210,56 +208,5 @@ jobs:
 
       - name: Publish Canary to NPM
         run: npm publish --tag canary
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-  create-release:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20.x'
-          cache: 'npm'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-artifacts
-          path: dist/
-
-      - name: Download WASM artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: whisper-wasm-files
-          path: wasm/
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.event.release.tag_name }}
-          release_name: ${{ github.event.release.name }}
-          body: ${{ github.event.release.body }}
-          draft: ${{ github.event.release.draft }}
-          prerelease: ${{ github.event.release.prerelease }}
-
-      - name: Publish to NPM
-        run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

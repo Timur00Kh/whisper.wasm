@@ -321,6 +321,25 @@ For detailed information about changes, new features, and bug fixes, see our [ch
 - **[feature-restart-on-timeout](docs/changelog/feature-restart-on-timeout.md)** - Added timeout handling, error recovery, and enhanced demo application
 - **[feature-audio-converter](docs/changelog/feature-audio-converter.md)** - Added AudioConverter helpers + demo integration (files, mic, `<audio>`)
 
+## Release
+
+Stable releases are triggered by pushing a git tag `vX.Y.Z` (created by `npm version`).
+
+```bash
+# on main (or after merging to main)
+npm version patch   # or: minor / major
+git push origin main --follow-tags
+```
+
+This will:
+
+- publish the package to npm (`latest`)
+- create a **draft** GitHub Release with auto-generated release notes (based on merged PRs) and attach build artifacts (`wasm/`, `dist/`)
+
+To keep release notes clean, use meaningful PR titles and add labels such as:
+`feature`, `enhancement`, `bug`, `fix`, `docs`, `refactor`, `chore`, `tests`, `ci`, `dependencies`.
+Use `skip-changelog` to exclude a PR from the generated notes.
+
 ## Development
 
 ### Prerequisites
