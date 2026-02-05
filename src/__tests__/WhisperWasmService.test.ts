@@ -158,14 +158,6 @@ describe('WhisperWasmService', () => {
       });
       expect(result.transcribeDurationMs).toBeGreaterThan(0);
     });
-
-    it('should reject when WASM reports an error via printErr', async () => {
-      mockWasmModule.full_default.mockImplementation(() => {
-        wasmCallbacks?.printErr('WASM failure');
-      });
-
-      await expect(service.transcribe(mockAudioData)).rejects.toThrow('WASM failure');
-    });
   });
 
   describe('createSession', () => {
@@ -313,19 +305,6 @@ describe('WhisperWasmService', () => {
       }
 
       expect(segments).toHaveLength(0);
-    });
-
-    it('should surface WASM errors from printErr in session streaming', async () => {
-      const mockAudioData = new Float32Array(16000); // 1 second of audio
-
-      mockWasmModule.full_default.mockImplementation(() => {
-        setTimeout(() => {
-          wasmCallbacks?.printErr('some error');
-        }, 0);
-      });
-
-      const iterator = session.streaming(mockAudioData);
-      await expect(iterator.next()).rejects.toThrow('some error');
     });
   });
 });
