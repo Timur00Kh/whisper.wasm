@@ -2,6 +2,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { WhisperWasmService } from '../whisper/WhisperWasmService';
 import { Logger } from '../utils/Logger';
 
+type WasmCallbacks = {
+  print: (e: string, ...rest: any[]) => void;
+  printErr: (e: string, ...rest: any[]) => void;
+};
+
+let wasmCallbacks: WasmCallbacks | null = null;
+
 // Mock WASM module
 const mockWasmModule = {
   init: vi.fn().mockReturnValue(123),
@@ -20,7 +27,10 @@ vi.mock('wasm-feature-detect', () => ({
 
 // Mock WASM import
 vi.mock('@wasm/libmain.js', () => ({
-  default: vi.fn().mockResolvedValue(mockWasmModule),
+  default: vi.fn().mockImplementation(async (callbacks: WasmCallbacks) => {
+    wasmCallbacks = callbacks;
+    return mockWasmModule;
+  }),
 }));
 
 // Mock sleep utility
@@ -33,6 +43,7 @@ describe('WhisperWasmService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    wasmCallbacks = null;
     service = new WhisperWasmService();
   });
 
@@ -129,17 +140,14 @@ describe('WhisperWasmService', () => {
 
       // Mock full_default to emit events immediately
       mockWasmModule.full_default.mockImplementation(() => {
-        console.log('full_default called!');
         // Use setTimeout to ensure the event is emitted after the promise is set up
         setTimeout(() => {
-          service['bus'].emit('transcribe', mockSegment);
-          service['bus'].emit('transcribeError', ' ');
+          wasmCallbacks?.print(mockSegment);
+          wasmCallbacks?.printErr(' ');
         }, 0);
       });
 
-      console.log('About to call transcribe');
       const result = await service.transcribe(mockAudioData);
-      console.log('Transcribe completed', result);
 
       expect(result.segments).toHaveLength(1);
       expect(result.segments[0]).toEqual({
@@ -149,6 +157,14 @@ describe('WhisperWasmService', () => {
         raw: mockSegment,
       });
       expect(result.transcribeDurationMs).toBeGreaterThan(0);
+    });
+
+    it('should reject when WASM reports an error via printErr', async () => {
+      mockWasmModule.full_default.mockImplementation(() => {
+        wasmCallbacks?.printErr('WASM failure');
+      });
+
+      await expect(service.transcribe(mockAudioData)).rejects.toThrow('WASM failure');
     });
   });
 
@@ -179,17 +195,17 @@ describe('WhisperWasmService', () => {
       mockWasmModule.full_default.mockImplementation(() => {
         const interval = setInterval(() => {
           if (segmentIndex < mockSegments.length) {
-            service['bus'].emit('transcribe', mockSegments[segmentIndex]);
+            wasmCallbacks?.print(mockSegments[segmentIndex]);
             segmentIndex++;
           } else {
             clearInterval(interval);
-            service['bus'].emit('transcribeError', ' ');
+            wasmCallbacks?.printErr(' ');
           }
         }, 10); // Faster interval for test
       });
 
       const segments: any[] = [];
-      for await (const segment of session.streamimg(mockAudioData)) {
+      for await (const segment of session.streaming(mockAudioData)) {
         segments.push(segment);
       }
 
@@ -210,12 +226,12 @@ describe('WhisperWasmService', () => {
 
       mockWasmModule.full_default.mockImplementation(() => {
         setTimeout(() => {
-          service['bus'].emit('transcribeError', ' ');
+          wasmCallbacks?.printErr(' ');
         }, 10);
       });
 
       const segments: any[] = [];
-      for await (const segment of session.streamimg(mockAudioData, options)) {
+      for await (const segment of session.streaming(mockAudioData, options)) {
         segments.push(segment);
       }
 
@@ -243,7 +259,7 @@ describe('WhisperWasmService', () => {
       let timeoutError: Error | null = null;
 
       try {
-        for await (const segment of session.streamimg(mockAudioData, options)) {
+        for await (const segment of session.streaming(mockAudioData, options)) {
           segments.push(segment);
         }
       } catch (error) {
@@ -264,7 +280,7 @@ describe('WhisperWasmService', () => {
       // Mock full_default to complete quickly
       mockWasmModule.full_default.mockImplementation(() => {
         setTimeout(() => {
-          service['bus'].emit('transcribeError', ' ');
+          wasmCallbacks?.printErr(' ');
         }, 50); // Complete before timeout
       });
 
@@ -272,7 +288,7 @@ describe('WhisperWasmService', () => {
       let timeoutError: Error | null = null;
 
       try {
-        for await (const segment of session.streamimg(mockAudioData, options)) {
+        for await (const segment of session.streaming(mockAudioData, options)) {
           segments.push(segment);
         }
       } catch (error) {
@@ -280,6 +296,36 @@ describe('WhisperWasmService', () => {
       }
 
       expect(timeoutError).toBeNull();
+    });
+
+    it('should keep streamimg as a deprecated alias', async () => {
+      const mockAudioData = new Float32Array(16000); // 1 second of audio
+
+      mockWasmModule.full_default.mockImplementation(() => {
+        setTimeout(() => {
+          wasmCallbacks?.printErr(' ');
+        }, 10);
+      });
+
+      const segments: any[] = [];
+      for await (const segment of session.streamimg(mockAudioData)) {
+        segments.push(segment);
+      }
+
+      expect(segments).toHaveLength(0);
+    });
+
+    it('should surface WASM errors from printErr in session streaming', async () => {
+      const mockAudioData = new Float32Array(16000); // 1 second of audio
+
+      mockWasmModule.full_default.mockImplementation(() => {
+        setTimeout(() => {
+          wasmCallbacks?.printErr('some error');
+        }, 0);
+      });
+
+      const iterator = session.streaming(mockAudioData);
+      await expect(iterator.next()).rejects.toThrow('some error');
     });
   });
 });

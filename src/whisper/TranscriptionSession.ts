@@ -33,7 +33,7 @@ export class TranscriptionSession {
     this.logger = new Logger(options?.logLevel || Logger.levels.ERROR, 'TranscriptionSession');
   }
 
-  async *streamimg(
+  async *streaming(
     audioData: Float32Array,
     options: ITranscriptionSessionOptions = {},
   ): AsyncIterableIterator<WhisperWasmServiceCallbackParams> {
@@ -113,5 +113,15 @@ export class TranscriptionSession {
       }
       if (options.sleepMsBetweenChunks) await sleep(options.sleepMsBetweenChunks);
     }
+  }
+
+  /**
+   * @deprecated Use `streaming()` instead.
+   */
+  async *streamimg(
+    audioData: Float32Array,
+    options: ITranscriptionSessionOptions = {},
+  ): AsyncIterableIterator<WhisperWasmServiceCallbackParams> {
+    yield* this.streaming(audioData, options);
   }
 }

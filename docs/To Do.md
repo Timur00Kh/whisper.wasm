@@ -22,6 +22,10 @@
 - [ ] Consider model versioning and updates strategy
 - [ ] Add webassembly service worker to library
 - [ ] CI/CD: switch NPM publishing to npm Trusted Publishing (OIDC) instead of long-lived `NPM_TOKEN` (per npm security warning)
+- [ ] CI/CD: replace deprecated `actions/create-release@v1` (use `gh release create` or a maintained release action)
+- [ ] CI/CD: pin GitHub Actions to commit SHAs (supply-chain hardening)
+- [ ] CI/CD: fix `build-wasm.yml` version update logic (avoid `sed` injection; use `WHISPER_CPP_VERSION` build-arg)
+- [ ] Build: harden `build-wasm.sh` (avoid inline `node -e` string interpolation for filenames)
 - [ ] Finalize `LICENSE` text (copyright holder/years)
 
 ---
