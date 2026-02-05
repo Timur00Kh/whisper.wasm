@@ -1,7 +1,7 @@
 # Changelog - Feature: Streaming API + Transcribe Done
 
-**Feature**: `TranscriptionSession.streaming()` + clarified completion semantics  
-**Date**: February 4, 2026
+**Feature**: `TranscriptionSession.streaming()` + completion semantics notes  
+**Date**: February 4, 2026 (updated February 5, 2026)
 
 ## 🚀 New Features
 
@@ -14,7 +14,8 @@
 
 ### Clearer “done vs error” semantics
 
-- Internally, the Whisper service now uses a dedicated completion signal (`transcribeDone`) instead of conflating completion with `transcribeError`.
+- A dedicated completion signal (`transcribeDone`) was introduced to avoid conflating completion with `transcribeError`.
+- **Update (Feb 5, 2026)**: this `transcribeDone` approach was rolled back for now; completion/error semantics are under review. Ref: `5262df84015043ef3c2b6f3c5b49d084c1a9e9f0` (`https://github.com/Timur00Kh/whisper.wasm/commit/5262df84015043ef3c2b6f3c5b49d084c1a9e9f0`)
 - **Important**: real errors still reject/throw as before (e.g. missing WASM module/instance, timeouts).
 
 ## 📝 Migration Notes
