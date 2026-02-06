@@ -129,18 +129,28 @@ jobs:
           echo "Beta version: $BETA_VERSION"
           echo "beta-version=$BETA_VERSION" >> $GITHUB_OUTPUT
 
-          # Update package.json with beta version (temporary, not committed to PR)
-          npm version $BETA_VERSION --no-git-tag-version
-          echo "Updated package.json with beta version"
+          # Check if this version already exists in NPM
+          PACKAGE_NAME="@timur00kh/whisper.wasm"
+          if npm view "${PACKAGE_NAME}@${BETA_VERSION}" version 2>/dev/null; then
+            echo "⚠️ Version ${BETA_VERSION} already exists in NPM"
+            echo "should-publish=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Version ${BETA_VERSION} does not exist, will publish"
+            echo "should-publish=true" >> $GITHUB_OUTPUT
+            
+            # Update package.json with beta version (temporary, not committed to PR)
+            npm version $BETA_VERSION --no-git-tag-version
+            echo "Updated package.json with beta version"
+          fi
 
       - name: Publish beta to NPM
-        if: steps.check.outputs.should-update == 'true'
+        if: steps.check.outputs.should-update == 'true' && steps.prepare_beta.outputs.should-publish == 'true'
         run: npm publish --tag beta
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Restore package.json
-        if: steps.check.outputs.should-update == 'true'
+        if: steps.check.outputs.should-update == 'true' && steps.prepare_beta.outputs.should-publish == 'true'
         run: git checkout package.json
 
       - name: Create Pull Request
@@ -163,11 +173,7 @@ jobs:
 
             ## NPM Publication
 
-            Beta version published to NPM:
-            ```bash
-            npm install @timur00kh/whisper.wasm@beta
-            # Version: ${{ steps.prepare_beta.outputs.beta-version }}
-            ```
+            ${{ steps.prepare_beta.outputs.should-publish == 'true' && format('✅ Beta version published to NPM:\n```bash\nnpm install @timur00kh/whisper.wasm@beta\n# Version: {0}\n```', steps.prepare_beta.outputs.beta-version) || format('⚠️ Beta version `{0}` already exists in NPM - skipped publication', steps.prepare_beta.outputs.beta-version) }}
 
             ## Testing
 
