@@ -344,7 +344,7 @@ Use `skip-changelog` to exclude a PR from the generated notes.
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - npm or yarn
 
 ### Setup
