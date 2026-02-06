@@ -33,10 +33,10 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.whisper_version }}"
             if [ "$VERSION" = "latest" ]; then
-              VERSION=$(curl -s https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest | jq -r '.tag_name')
+              VERSION=$(curl -s https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest | jq -r '.tag_name')
             fi
           else
-            VERSION=$(curl -s https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest | jq -r '.tag_name')
+            VERSION=$(curl -s https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest | jq -r '.tag_name')
           fi
 
           echo "Latest whisper.cpp version: $VERSION"

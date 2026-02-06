@@ -380,7 +380,7 @@ MIT
 
 ## Acknowledgments
 
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - High-performance C++ implementation of Whisper
+- [whisper.cpp](https://github.com/ggml-org/whisper.cpp) - High-performance C++ implementation of Whisper
 - [OpenAI Whisper](https://github.com/openai/whisper) - The original speech recognition model
 - [Emscripten](https://emscripten.org/) - WebAssembly compilation toolkit
 
