@@ -1,97 +1,181 @@
-name: Build Whisper WASM
+name: Auto-update Whisper.cpp
 
 on:
   schedule:
-    # Run daily at 2 AM UTC to check for new whisper.cpp releases
-    - cron: '0 2 * * *'
+    # Run weekly on Sunday at 2 AM UTC to check for new whisper.cpp releases
+    - cron: '0 2 * * 0'
   workflow_dispatch:
     inputs:
       whisper_version:
-        description: 'Whisper.cpp version to build (e.g., v1.5.4)'
+        description: 'Whisper.cpp version to build (e.g., v1.7.6)'
         required: false
         default: 'latest'
 
 jobs:
-  check-version:
+  check-and-update:
     runs-on: ubuntu-latest
-    outputs:
-      should-build: ${{ steps.check.outputs.should-build }}
-      version: ${{ steps.check.outputs.version }}
-
-    steps:
-      - name: Check for new whisper.cpp releases
-        id: check
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.whisper_version }}"
-            if [ "$VERSION" = "latest" ]; then
-              VERSION=$(curl -s https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest | jq -r '.tag_name')
-            fi
-            echo "should-build=true" >> $GITHUB_OUTPUT
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-          else
-            # Check if there's a new release since last build
-            LATEST_VERSION=$(curl -s https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest | jq -r '.tag_name')
-            LAST_BUILD_VERSION=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name' 2>/dev/null || echo "v0.0.0")
-            
-            if [ "$LATEST_VERSION" != "$LAST_BUILD_VERSION" ]; then
-              echo "should-build=true" >> $GITHUB_OUTPUT
-              echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-            else
-              echo "should-build=false" >> $GITHUB_OUTPUT
-              echo "version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-            fi
-          fi
-
-  build-wasm:
-    runs-on: ubuntu-latest
-    needs: check-version
-    if: needs.check-version.outputs.should-build == 'true'
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Check for new whisper.cpp releases
+        id: check
+        run: |
+          # Get current version from Dockerfile
+          CURRENT_VERSION=$(grep 'ARG WHISPER_CPP_VERSION=' Dockerfile | cut -d'"' -f2)
+          echo "Current version in Dockerfile: $CURRENT_VERSION"
+
+          # Get latest version from whisper.cpp releases
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.whisper_version }}"
+            if [ "$VERSION" = "latest" ]; then
+              VERSION=$(curl -s https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest | jq -r '.tag_name')
+            fi
+          else
+            VERSION=$(curl -s https://api.github.com/repos/ggerganov/whisper.cpp/releases/latest | jq -r '.tag_name')
+          fi
+
+          echo "Latest whisper.cpp version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Compare versions
+          if [ "$CURRENT_VERSION" = "$VERSION" ]; then
+            echo "No new version available. Current: $CURRENT_VERSION, Latest: $VERSION"
+            echo "should-update=false" >> $GITHUB_OUTPUT
+          else
+            echo "New version available! Current: $CURRENT_VERSION -> Latest: $VERSION"
+            echo "should-update=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Dockerfile
+        if: steps.check.outputs.should-update == 'true'
+        run: |
+          VERSION="${{ steps.check.outputs.version }}"
+          echo "Updating Dockerfile with version: $VERSION"
+          sed -i 's/ARG WHISPER_CPP_VERSION=".*"/ARG WHISPER_CPP_VERSION="'$VERSION'"/' Dockerfile
+
+          # Verify the change
+          grep 'ARG WHISPER_CPP_VERSION=' Dockerfile
+
       - name: Set up Docker Buildx
+        if: steps.check.outputs.should-update == 'true'
         uses: docker/setup-buildx-action@v3
 
-      - name: Build WASM with specific version
+      - name: Build WASM files
+        if: steps.check.outputs.should-update == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: export-stage
+          outputs: type=local,dest=./wasm
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Fix worker import paths
+        if: steps.check.outputs.should-update == 'true'
         run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          echo "Building whisper.wasm for version: $VERSION"
+          for file in ./wasm/*.js; do
+            filename=$(basename "$file")
+            echo "Fixing $filename"
+            node -e "
+          const fs = require('fs');
+          const content = fs.readFileSync('$file', 'utf8');
+          fs.writeFileSync('$file', content.replace(/$filename/g, ''));
+          "
+          done
 
-          # Update Dockerfile with specific version
-          sed -i "s/git checkout v1.5.4/git checkout $VERSION/" Dockerfile
+      - name: Setup Node.js
+        if: steps.check.outputs.should-update == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
 
-          # Build the Docker image
-          docker build -t whisper-wasm-builder:$VERSION .
+      - name: Install dependencies
+        if: steps.check.outputs.should-update == 'true'
+        run: npm ci
 
-          # Extract WASM files
-          docker create --name temp-container whisper-wasm-builder:$VERSION
-          docker cp temp-container:/wasm ./wasm
-          docker rm temp-container
+      - name: Run linter
+        if: steps.check.outputs.should-update == 'true'
+        run: npm run lint
 
-      - name: Test WASM files
+      - name: Run tests
+        if: steps.check.outputs.should-update == 'true'
+        run: npm run test:ci
+
+      - name: Build project
+        if: steps.check.outputs.should-update == 'true'
+        run: npm run build
+
+      - name: Prepare beta version
+        if: steps.check.outputs.should-update == 'true'
+        id: prepare_beta
         run: |
-          if [ ! -f "wasm/whisper.wasm" ] || [ ! -f "wasm/whisper.js" ]; then
-            echo "WASM files not found!"
-            exit 1
-          fi
-          echo "WASM files built successfully"
+          # Get current version
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "Current version: $CURRENT_VERSION"
+
+          # Get whisper.cpp version
+          WHISPER_VERSION="${{ steps.check.outputs.version }}"
+          echo "Whisper.cpp version: $WHISPER_VERSION"
+
+          # Create beta version
+          BETA_VERSION="${CURRENT_VERSION}-beta.whisper.cpp-${WHISPER_VERSION}"
+          echo "Beta version: $BETA_VERSION"
+          echo "beta-version=$BETA_VERSION" >> $GITHUB_OUTPUT
+
+          # Update package.json with beta version (temporary, not committed to PR)
+          npm version $BETA_VERSION --no-git-tag-version
+          echo "Updated package.json with beta version"
+
+      - name: Publish beta to NPM
+        if: steps.check.outputs.should-update == 'true'
+        run: npm publish --tag beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Restore package.json
+        if: steps.check.outputs.should-update == 'true'
+        run: git checkout package.json
 
       - name: Create Pull Request
+        if: steps.check.outputs.should-update == 'true'
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: 'Update whisper.wasm to ${{ needs.check-version.outputs.version }}'
-          title: 'Update whisper.wasm to ${{ needs.check-version.outputs.version }}'
+          commit-message: 'chore: update whisper.cpp to ${{ steps.check.outputs.version }}'
+          title: 'chore: update whisper.cpp to ${{ steps.check.outputs.version }}'
           body: |
-            This PR updates whisper.wasm to version ${{ needs.check-version.outputs.version }}.
+            ## Summary
 
-            Changes:
-            - Updated whisper.wasm binary
-            - Updated whisper.js bindings
+            Automatic update of whisper.cpp to version **${{ steps.check.outputs.version }}**.
 
-            Please review and merge to trigger a new release.
-          branch: update-whisper-${{ needs.check-version.outputs.version }}
+            ## Changes
+
+            - Updated `Dockerfile` with whisper.cpp ${{ steps.check.outputs.version }}
+            - Rebuilt WASM binaries (`wasm/` directory)
+            - All tests passed ✅
+
+            ## NPM Publication
+
+            Beta version published to NPM:
+            ```bash
+            npm install @timur00kh/whisper.wasm@beta
+            # Version: ${{ steps.prepare_beta.outputs.beta-version }}
+            ```
+
+            ## Testing
+
+            - ✅ Linter passed
+            - ✅ Unit tests passed
+            - ✅ Build successful
+
+            Please review and merge to include this update in the next stable release.
+          branch: auto-update-whisper-${{ steps.check.outputs.version }}
           delete-branch: true
+          labels: dependencies,automated
