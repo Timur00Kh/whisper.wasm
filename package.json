@@ -90,12 +90,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/timur00kh/whisper.wasm.git"
+    "url": "https://github.com/Timur00Kh/whisper.wasm"
   },
   "bugs": {
-    "url": "https://github.com/timur00kh/whisper.wasm/issues"
+    "url": "https://github.com/Timur00Kh/whisper.wasm/issues"
   },
-  "homepage": "https://github.com/timur00kh/whisper.wasm#readme",
+  "homepage": "https://github.com/Timur00Kh/whisper.wasm#readme",
   "publishConfig": {
     "access": "public"
   }
