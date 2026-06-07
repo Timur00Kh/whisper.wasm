@@ -154,6 +154,7 @@ jobs:
       !contains(github.event.head_commit.message, '[skip canary]')
     permissions:
       contents: write
+      id-token: write
     outputs:
       canary-version: ${{ steps.prepare_canary.outputs.canary-version }}
 
@@ -176,6 +177,9 @@ jobs:
         with:
           name: whisper-wasm-files
           path: wasm/
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@11
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -208,6 +212,4 @@ jobs:
           echo "Updated package.json with canary version"
 
       - name: Publish Canary to NPM
-        run: npm publish --tag canary
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --tag canary --provenance

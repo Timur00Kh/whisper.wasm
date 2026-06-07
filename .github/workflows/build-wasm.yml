@@ -17,6 +17,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      id-token: write
 
     steps:
       - name: Checkout code
@@ -96,6 +97,10 @@ jobs:
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
 
+      - name: Upgrade npm for trusted publishing
+        if: steps.check.outputs.should-update == 'true'
+        run: npm install -g npm@11
+
       - name: Install dependencies
         if: steps.check.outputs.should-update == 'true'
         run: npm ci
@@ -145,9 +150,7 @@ jobs:
 
       - name: Publish beta to NPM
         if: steps.check.outputs.should-update == 'true' && steps.prepare_beta.outputs.should-publish == 'true'
-        run: npm publish --tag beta
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --tag beta --provenance
 
       - name: Restore package.json
         if: steps.check.outputs.should-update == 'true' && steps.prepare_beta.outputs.should-publish == 'true'
