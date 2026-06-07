@@ -1,0 +1,481 @@
+name: Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Sunday at 2 AM UTC to check for new whisper.cpp releases
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      whisper_version:
+        description: 'Whisper.cpp version to build (e.g., v1.7.6)'
+        required: false
+        default: 'latest'
+
+jobs:
+  ci-build-wasm:
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'push' || github.event_name == 'pull_request') &&
+      !startsWith(github.ref, 'refs/tags/') &&
+      (
+        github.event_name != 'push' ||
+        !contains(github.event.head_commit.message, '[skip ci]')
+      )
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build WASM files
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: export-stage
+          outputs: type=local,dest=./wasm
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Fix worker import paths
+        run: |
+          for file in ./wasm/*.js; do
+            filename=$(basename "$file")
+            echo "Fixing $filename"
+            node -e "
+          const fs = require('fs');
+          const content = fs.readFileSync('$file', 'utf8');
+          fs.writeFileSync('$file', content.replace(/$filename/g, ''));
+          "
+          done
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-wasm-files
+          path: wasm/
+          retention-days: 30
+
+  ci-test:
+    runs-on: ubuntu-latest
+    needs: ci-build-wasm
+    if: >
+      (github.event_name == 'push' || github.event_name == 'pull_request') &&
+      !startsWith(github.ref, 'refs/tags/') &&
+      (
+        github.event_name != 'push' ||
+        !contains(github.event.head_commit.message, '[skip ci]')
+      )
+
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: whisper-wasm-files
+          path: wasm/
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run tests
+        run: npm run test:ci
+
+      - name: Build project
+        run: npm run build
+
+  deploy-demo:
+    runs-on: ubuntu-latest
+    needs: [ci-test, ci-build-wasm]
+    if: >
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      !contains(github.event.head_commit.message, '[skip ci]')
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: whisper-wasm-files
+          path: wasm/
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build library
+        run: npm run build:lib
+
+      - name: Build demo
+        run: npm run build:demo:github
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload to Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: demo-dist/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  publish-canary:
+    runs-on: ubuntu-latest
+    needs: [ci-test, ci-build-wasm]
+    if: >
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[skip canary]')
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      canary-version: ${{ steps.prepare_canary.outputs.canary-version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Download WASM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: whisper-wasm-files
+          path: wasm/
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@11
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare Canary Version
+        id: prepare_canary
+        run: |
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          CANARY_VERSION="${CURRENT_VERSION}-canary.${COMMIT_HASH}"
+
+          echo "Current version: $CURRENT_VERSION"
+          echo "Commit hash: $COMMIT_HASH"
+          echo "Canary version: $CANARY_VERSION"
+          echo "canary-version=$CANARY_VERSION" >> $GITHUB_OUTPUT
+
+          PACKAGE_NAME="@timur00kh/whisper.wasm"
+          if npm view "${PACKAGE_NAME}@${CANARY_VERSION}" version 2>/dev/null; then
+            echo "Version ${CANARY_VERSION} already exists in NPM"
+            echo "should-publish=false" >> $GITHUB_OUTPUT
+          else
+            echo "Version ${CANARY_VERSION} does not exist, will publish"
+            echo "should-publish=true" >> $GITHUB_OUTPUT
+            npm version $CANARY_VERSION --no-git-tag-version
+          fi
+
+      - name: Publish Canary to NPM
+        if: steps.prepare_canary.outputs.should-publish == 'true'
+        run: npm publish --tag canary --provenance
+
+  release:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build WASM files
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: export-stage
+          outputs: type=local,dest=./wasm
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Fix worker import paths
+        run: |
+          for file in ./wasm/*.js; do
+            filename=$(basename "$file")
+            echo "Fixing $filename"
+            node -e "
+          const fs = require('fs');
+          const content = fs.readFileSync('$file', 'utf8');
+          fs.writeFileSync('$file', content.replace(/$filename/g, ''));
+          "
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@11
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate tag matches package version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          TAG_VERSION="${TAG#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+
+          echo "Tag: ${TAG} (version ${TAG_VERSION})"
+          echo "package.json version: ${PKG_VERSION}"
+
+          if [ "${TAG_VERSION}" != "${PKG_VERSION}" ]; then
+            echo "::error::Tag version (${TAG_VERSION}) does not match package.json version (${PKG_VERSION})."
+            exit 1
+          fi
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Run tests
+        run: npm run test:ci
+
+      - name: Build library
+        run: npm run build:lib
+
+      - name: Publish to npm
+        run: npm publish --provenance
+
+      - name: Package release assets
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          tar -czf "whisper-wasm-${TAG}.tar.gz" wasm
+          tar -czf "whisper-dist-${TAG}.tar.gz" dist
+          ls -lah "whisper-wasm-${TAG}.tar.gz" "whisper-dist-${TAG}.tar.gz"
+
+      - name: Create GitHub Release (draft) with notes + assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "${TAG}" \
+            --draft \
+            --generate-notes \
+            --title "${TAG}" \
+            "whisper-wasm-${TAG}.tar.gz" \
+            "whisper-dist-${TAG}.tar.gz"
+
+  auto-update-whisper:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for new whisper.cpp releases
+        id: check
+        run: |
+          CURRENT_VERSION=$(grep 'ARG WHISPER_CPP_VERSION=' Dockerfile | cut -d'"' -f2)
+          echo "Current version in Dockerfile: $CURRENT_VERSION"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.whisper_version }}"
+            if [ "$VERSION" = "latest" ]; then
+              VERSION=$(curl -s https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest | jq -r '.tag_name')
+            fi
+          else
+            VERSION=$(curl -s https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest | jq -r '.tag_name')
+          fi
+
+          echo "Latest whisper.cpp version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          if [ "$CURRENT_VERSION" = "$VERSION" ]; then
+            echo "No new version available. Current: $CURRENT_VERSION, Latest: $VERSION"
+            echo "should-update=false" >> $GITHUB_OUTPUT
+          else
+            echo "New version available! Current: $CURRENT_VERSION -> Latest: $VERSION"
+            echo "should-update=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Dockerfile
+        if: steps.check.outputs.should-update == 'true'
+        run: |
+          VERSION="${{ steps.check.outputs.version }}"
+          echo "Updating Dockerfile with version: $VERSION"
+          sed -i 's/ARG WHISPER_CPP_VERSION=".*"/ARG WHISPER_CPP_VERSION="'$VERSION'"/' Dockerfile
+          grep 'ARG WHISPER_CPP_VERSION=' Dockerfile
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.should-update == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build WASM files
+        if: steps.check.outputs.should-update == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: export-stage
+          outputs: type=local,dest=./wasm
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Fix worker import paths
+        if: steps.check.outputs.should-update == 'true'
+        run: |
+          for file in ./wasm/*.js; do
+            filename=$(basename "$file")
+            echo "Fixing $filename"
+            node -e "
+          const fs = require('fs');
+          const content = fs.readFileSync('$file', 'utf8');
+          fs.writeFileSync('$file', content.replace(/$filename/g, ''));
+          "
+          done
+
+      - name: Setup Node.js
+        if: steps.check.outputs.should-update == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm for trusted publishing
+        if: steps.check.outputs.should-update == 'true'
+        run: npm install -g npm@11
+
+      - name: Install dependencies
+        if: steps.check.outputs.should-update == 'true'
+        run: npm ci
+
+      - name: Run linter
+        if: steps.check.outputs.should-update == 'true'
+        run: npm run lint
+
+      - name: Run tests
+        if: steps.check.outputs.should-update == 'true'
+        run: npm run test:ci
+
+      - name: Build project
+        if: steps.check.outputs.should-update == 'true'
+        run: npm run build
+
+      - name: Prepare beta version
+        if: steps.check.outputs.should-update == 'true'
+        id: prepare_beta
+        run: |
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          WHISPER_VERSION="${{ steps.check.outputs.version }}"
+          BETA_VERSION="${CURRENT_VERSION}-beta.whisper.cpp-${WHISPER_VERSION}"
+
+          echo "Current version: $CURRENT_VERSION"
+          echo "Whisper.cpp version: $WHISPER_VERSION"
+          echo "Beta version: $BETA_VERSION"
+          echo "beta-version=$BETA_VERSION" >> $GITHUB_OUTPUT
+
+          PACKAGE_NAME="@timur00kh/whisper.wasm"
+          if npm view "${PACKAGE_NAME}@${BETA_VERSION}" version 2>/dev/null; then
+            echo "⚠️ Version ${BETA_VERSION} already exists in NPM"
+            echo "should-publish=false" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Version ${BETA_VERSION} does not exist, will publish"
+            echo "should-publish=true" >> $GITHUB_OUTPUT
+            npm version $BETA_VERSION --no-git-tag-version
+          fi
+
+      - name: Publish beta to NPM
+        if: steps.check.outputs.should-update == 'true' && steps.prepare_beta.outputs.should-publish == 'true'
+        run: npm publish --tag beta --provenance
+
+      - name: Restore package.json
+        if: steps.check.outputs.should-update == 'true' && steps.prepare_beta.outputs.should-publish == 'true'
+        run: git checkout package.json
+
+      - name: Create Pull Request
+        if: steps.check.outputs.should-update == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'chore: update whisper.cpp to ${{ steps.check.outputs.version }}'
+          title: 'chore: update whisper.cpp to ${{ steps.check.outputs.version }}'
+          body: |
+            ## Summary
+
+            Automatic update of whisper.cpp to version **${{ steps.check.outputs.version }}**.
+
+            ## Changes
+
+            - Updated `Dockerfile` with whisper.cpp ${{ steps.check.outputs.version }}
+            - Rebuilt WASM binaries (`wasm/` directory)
+            - All tests passed ✅
+
+            ## NPM Publication
+
+            ${{ steps.prepare_beta.outputs.should-publish == 'true' && format('✅ Beta version published to NPM:\n```bash\nnpm install @timur00kh/whisper.wasm@beta\n# Version: {0}\n```', steps.prepare_beta.outputs.beta-version) || format('⚠️ Beta version `{0}` already exists in NPM - skipped publication', steps.prepare_beta.outputs.beta-version) }}
+
+            ## Testing
+
+            - ✅ Linter passed
+            - ✅ Unit tests passed
+            - ✅ Build successful
+
+            Please review and merge to include this update in the next stable release.
+          branch: auto-update-whisper-${{ steps.check.outputs.version }}
+          delete-branch: true
+          labels: dependencies,automated
