@@ -15,9 +15,12 @@ jobs:
   check-and-update:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
-      id-token: write
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      should-update: ${{ steps.check.outputs.should-update }}
+      beta-version: ${{ steps.prepare_beta.outputs.beta-version }}
+      should-publish: ${{ steps.prepare_beta.outputs.should-publish }}
 
     steps:
       - name: Checkout code
@@ -89,6 +92,14 @@ jobs:
           "
           done
 
+      - name: Upload WASM artifact
+        if: steps.check.outputs.should-update == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: whisper-wasm-files
+          path: wasm/
+          retention-days: 7
+
       - name: Setup Node.js
         if: steps.check.outputs.should-update == 'true'
         uses: actions/setup-node@v4
@@ -96,10 +107,6 @@ jobs:
           node-version: '20.x'
           cache: 'npm'
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Upgrade npm for trusted publishing
-        if: steps.check.outputs.should-update == 'true'
-        run: npm install -g npm@11
 
       - name: Install dependencies
         if: steps.check.outputs.should-update == 'true'
@@ -142,41 +149,72 @@ jobs:
           else
             echo "✅ Version ${BETA_VERSION} does not exist, will publish"
             echo "should-publish=true" >> $GITHUB_OUTPUT
-            
-            # Update package.json with beta version (temporary, not committed to PR)
-            npm version $BETA_VERSION --no-git-tag-version
-            echo "Updated package.json with beta version"
           fi
 
-      - name: Publish beta to NPM
-        if: steps.check.outputs.should-update == 'true' && steps.prepare_beta.outputs.should-publish == 'true'
-        run: npm publish --tag beta --provenance
+  publish-beta:
+    needs: check-and-update
+    if: needs.check-and-update.outputs.should-update == 'true' && needs.check-and-update.outputs.should-publish == 'true'
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    uses: ./.github/workflows/npm-publish.yml
+    with:
+      channel: beta
+      version: ${{ needs.check-and-update.outputs.beta-version }}
+      npm_tag: beta
+      wasm_artifact_name: whisper-wasm-files
+      run_checks: true
 
-      - name: Restore package.json
-        if: steps.check.outputs.should-update == 'true' && steps.prepare_beta.outputs.should-publish == 'true'
-        run: git checkout package.json
+  create-pull-request:
+    runs-on: ubuntu-latest
+    needs: [check-and-update, publish-beta]
+    if: >
+      always() &&
+      needs.check-and-update.outputs.should-update == 'true' &&
+      needs.publish-beta.result != 'failure' &&
+      needs.publish-beta.result != 'cancelled'
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update Dockerfile
+        run: |
+          VERSION="${{ needs.check-and-update.outputs.version }}"
+          echo "Updating Dockerfile with version: $VERSION"
+          sed -i 's/ARG WHISPER_CPP_VERSION=".*"/ARG WHISPER_CPP_VERSION="'$VERSION'"/' Dockerfile
+          grep 'ARG WHISPER_CPP_VERSION=' Dockerfile
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: whisper-wasm-files
+          path: wasm/
 
       - name: Create Pull Request
-        if: steps.check.outputs.should-update == 'true'
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: 'chore: update whisper.cpp to ${{ steps.check.outputs.version }}'
-          title: 'chore: update whisper.cpp to ${{ steps.check.outputs.version }}'
+          commit-message: 'chore: update whisper.cpp to ${{ needs.check-and-update.outputs.version }}'
+          title: 'chore: update whisper.cpp to ${{ needs.check-and-update.outputs.version }}'
           body: |
             ## Summary
 
-            Automatic update of whisper.cpp to version **${{ steps.check.outputs.version }}**.
+            Automatic update of whisper.cpp to version **${{ needs.check-and-update.outputs.version }}**.
 
             ## Changes
 
-            - Updated `Dockerfile` with whisper.cpp ${{ steps.check.outputs.version }}
+            - Updated `Dockerfile` with whisper.cpp ${{ needs.check-and-update.outputs.version }}
             - Rebuilt WASM binaries (`wasm/` directory)
             - All tests passed ✅
 
             ## NPM Publication
 
-            ${{ steps.prepare_beta.outputs.should-publish == 'true' && format('✅ Beta version published to NPM:\n```bash\nnpm install @timur00kh/whisper.wasm@beta\n# Version: {0}\n```', steps.prepare_beta.outputs.beta-version) || format('⚠️ Beta version `{0}` already exists in NPM - skipped publication', steps.prepare_beta.outputs.beta-version) }}
+            ${{ needs.check-and-update.outputs.should-publish == 'true' && format('✅ Beta version published to NPM:\n```bash\nnpm install @timur00kh/whisper.wasm@beta\n# Version: {0}\n```', needs.check-and-update.outputs.beta-version) || format('⚠️ Beta version `{0}` already exists in NPM - skipped publication', needs.check-and-update.outputs.beta-version) }}
 
             ## Testing
 
@@ -185,6 +223,6 @@ jobs:
             - ✅ Build successful
 
             Please review and merge to include this update in the next stable release.
-          branch: auto-update-whisper-${{ steps.check.outputs.version }}
+          branch: auto-update-whisper-${{ needs.check-and-update.outputs.version }}
           delete-branch: true
           labels: dependencies,automated

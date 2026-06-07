@@ -1,0 +1,168 @@
+name: Publish npm package
+
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: 'Publication channel: stable, beta, or canary'
+        required: true
+        type: string
+      version:
+        description: 'Exact package version to publish. Leave empty to derive canary from package.json + SHA or stable from package.json.'
+        required: false
+        type: string
+        default: ''
+      npm_tag:
+        description: 'npm dist-tag to publish with. Leave empty for stable/latest.'
+        required: false
+        type: string
+        default: ''
+      wasm_artifact_name:
+        description: 'GitHub artifact containing wasm/ files.'
+        required: false
+        type: string
+        default: 'whisper-wasm-files'
+      run_checks:
+        description: 'Run lint, tests, and build before publish.'
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      published-version:
+        description: 'Version selected for publication.'
+        value: ${{ jobs.publish.outputs.published-version }}
+      should-publish:
+        description: 'Whether the version did not exist before publish.'
+        value: ${{ jobs.publish.outputs.should-publish }}
+
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Publication channel'
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+          - canary
+      version:
+        description: 'Exact package version to publish. Leave empty for stable/current or canary auto-version.'
+        required: false
+        type: string
+        default: ''
+      npm_tag:
+        description: 'npm dist-tag. Defaults: stable -> latest, beta -> beta, canary -> canary.'
+        required: false
+        type: string
+        default: ''
+      wasm_artifact_name:
+        description: 'Artifact name with wasm/ files, when called from another workflow run.'
+        required: false
+        type: string
+        default: 'whisper-wasm-files'
+      run_checks:
+        description: 'Run lint, tests, and build before publish.'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    outputs:
+      published-version: ${{ steps.prepare.outputs.version }}
+      should-publish: ${{ steps.prepare.outputs.should-publish }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@11
+
+      - name: Download WASM artifact
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: ${{ inputs.wasm_artifact_name }}
+          path: wasm/
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare package version
+        id: prepare
+        run: |
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          CURRENT_VERSION="$(node -p "require('./package.json').version")"
+          REQUESTED_VERSION="${{ inputs.version }}"
+          CHANNEL="${{ inputs.channel }}"
+
+          if [ -n "$REQUESTED_VERSION" ]; then
+            VERSION="$REQUESTED_VERSION"
+          elif [ "$CHANNEL" = "canary" ]; then
+            VERSION="${CURRENT_VERSION}-canary.${GITHUB_SHA::7}"
+          else
+            VERSION="$CURRENT_VERSION"
+          fi
+
+          echo "Package: $PACKAGE_NAME"
+          echo "Version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "Version already exists in npm, skipping publish."
+            echo "should-publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version does not exist, will publish."
+            echo "should-publish=true" >> "$GITHUB_OUTPUT"
+            if [ "$VERSION" != "$CURRENT_VERSION" ]; then
+              npm version "$VERSION" --no-git-tag-version
+            fi
+          fi
+
+      - name: Run linter
+        if: inputs.run_checks && steps.prepare.outputs.should-publish == 'true'
+        run: npm run lint
+
+      - name: Run tests
+        if: inputs.run_checks && steps.prepare.outputs.should-publish == 'true'
+        run: npm run test:ci
+
+      - name: Build library
+        if: inputs.run_checks && steps.prepare.outputs.should-publish == 'true'
+        run: npm run build:lib
+
+      - name: Publish to npm
+        if: steps.prepare.outputs.should-publish == 'true'
+        run: |
+          CHANNEL="${{ inputs.channel }}"
+          TAG="${{ inputs.npm_tag }}"
+
+          if [ -z "$TAG" ]; then
+            case "$CHANNEL" in
+              stable) npm publish --provenance ;;
+              beta) npm publish --tag beta --provenance ;;
+              canary) npm publish --tag canary --provenance ;;
+              *) echo "Unknown channel: $CHANNEL"; exit 1 ;;
+            esac
+          else
+            npm publish --tag "$TAG" --provenance
+          fi
