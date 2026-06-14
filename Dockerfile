@@ -1,4 +1,4 @@
-ARG WHISPER_CPP_VERSION="v1.7.6"
+ARG WHISPER_CPP_VERSION="v1.8.6"
 
 # Multi-stage build for whisper.wasm
 FROM emscripten/emsdk:4.0.14 AS builder
